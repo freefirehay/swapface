@@ -2,140 +2,119 @@
 <html lang="vi">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FF Swapface – 2 ảnh vào, 1 ảnh ra</title>
+
   <style>
     :root{
-      --bg:#0b1220; --panel:#111a2b; --muted:#9aa4b2; --accent:#6d6afc; --text:#e9eef7;
-      --radius:14px;
+      --bg:#0b1220; --panel:#0f1a31; --muted:#9aa4b2; --accent:#6d6afc;
+      --text:#e9eef7; --border:#22304a; --radius:14px;
     }
+    *{box-sizing:border-box}
     html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif}
     .wrap{max-width:980px;margin:28px auto;padding:0 12px}
     h1{font-size:24px;margin:0 0 12px}
-    .card{background:var(--panel);border:1px solid #22304a;border-radius:var(--radius);padding:16px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     .field{display:flex;flex-direction:column;gap:8px}
     label{font-weight:700}
-    input[type=file]{background:#0f1a31;border:1px dashed #39507d;border-radius:12px;padding:14px;color:var(--muted)}
-    .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    input[type=file]{background:#0c1528;border:1px dashed #39507d;border-radius:12px;padding:14px;color:var(--muted)}
+    .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
     button{
       background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 16px;
       font-weight:700;cursor:pointer
     }
     button[disabled]{opacity:.5;cursor:not-allowed}
-    .preview{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
-    .box{background:#0f1a31;border:1px solid #22304a;border-radius:12px;min-height:220px;display:flex;
-         align-items:center;justify-content:center;overflow:hidden}
+    .status{font-weight:700}
+    .col{display:flex;flex-direction:column;gap:10px}
+    .box{background:#0c1528;border:1px solid var(--border);border-radius:12px;min-height:220px;display:flex;align-items:center;justify-content:center;overflow:hidden}
     .box img{max-width:100%;max-height:100%;object-fit:contain;display:block}
     .muted{color:var(--muted);font-size:13px}
-    .status{font-weight:700}
-    .footer{margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .result{margin-top:16px}
+    .footer{margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     a.btn{background:#24324f;border:1px solid #2e4169;border-radius:10px;padding:9px 12px;color:#fff;text-decoration:none}
     @media (max-width:720px){ .grid{grid-template-columns:1fr} .box{min-height:180px} }
   </style>
 
-  <!-- Gradio JS Client qua CDN (chuẩn docs) -->
+  <!-- Gọi API Space bằng Gradio JS Client -->
   <script type="module">
     import { Client, handle_file } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
-    // ==== cấu hình ====
-    const SPACE = "freefirehay/ff_faceswap"; // tên Space
-    const NEED_TOKEN = false;                // true nếu Space private
-    const HF_TOKEN = "";                     // điền hf_xxx nếu NEED_TOKEN = true
+    // ====== CẤU HÌNH ======
+    const SPACE = "freefirehay/ff_faceswap";   // tên Space
+    const ENDPOINT = "/predict_2img";          // endpoint bạn vừa thêm trong app.py
+    // Nếu Space private: thêm ?token=hf_xxx vào URL hoặc điền ở dưới
+    const urlToken = new URLSearchParams(location.search).get("token") || "";
+    const NEED_TOKEN = !!urlToken;
+    const HF_TOKEN = urlToken; // hoặc gán chuỗi token cố định
 
-    // ==== DOM ====
-    const faceInput   = document.getElementById("face");
-    const gameInput   = document.getElementById("game");
-    const runBtn      = document.getElementById("run");
-    const resetBtn    = document.getElementById("reset");
-    const statusEl    = document.getElementById("status");
-    const facePrev    = document.getElementById("prev-face");
-    const gamePrev    = document.getElementById("prev-game");
-    const outImg      = document.getElementById("out-img");
-    const dlLink      = document.getElementById("dl");
+    // ====== DOM ======
+    const faceInput = document.getElementById("face");
+    const gameInput = document.getElementById("game");
+    const facePrev  = document.getElementById("prev-face");
+    const gamePrev  = document.getElementById("prev-game");
+    const runBtn    = document.getElementById("run");
+    const resetBtn  = document.getElementById("reset");
+    const statusEl  = document.getElementById("status");
+    const outImg    = document.getElementById("out-img");
+    const dlLink    = document.getElementById("dl");
+    const newtab    = document.getElementById("open");
 
     let app = null;
-    let endpoint = null;
 
-    // ảnh xem trước
+    // ====== helpers ======
     function showPreview(input, imgEl){
-      if (!input.files?.[0]){ imgEl.src=""; return; }
+      if (!input.files?.[0]) { imgEl.src=""; return; }
       imgEl.src = URL.createObjectURL(input.files[0]);
     }
-    faceInput.addEventListener("change", ()=>showPreview(faceInput, facePrev));
-    gameInput.addEventListener("change", ()=>showPreview(gameInput, gamePrev));
-
-    // tìm endpoint 2 ảnh
-    async function detectEndpoint(client){
-      try{
-        const info = await client.view_api(); // trả về danh sách endpoint (docs) :contentReference[oaicite:1]{index=1}
-        // ưu tiên named_endpoints có 2 Image
-        const named = info?.named_endpoints ?? {};
-        for (const [name, spec] of Object.entries(named)){
-          const params = spec?.parameters ?? [];
-          const imgInputs = params.filter(p=>{
-            const c = String(p.component||p.type||"").toLowerCase();
-            return c.includes("image");
-          });
-          if (imgInputs.length >= 2) return name; // ví dụ "/predict_2img"
-        }
-        // fallback
-        if (named["/predict"]) return "/predict";
-        return 0; // fn_index=0
-      }catch(e){
-        console.warn("view_api failed:", e);
-        return "/predict"; // cố gắng mặc định
-      }
-    }
-
-    async function ensureClient(){
-      if (app) return app;
-      app = await Client.connect(SPACE, NEED_TOKEN ? { hf_token: HF_TOKEN } : undefined); // :contentReference[oaicite:2]{index=2}
-      endpoint = await detectEndpoint(app);
-      console.log("Using endpoint:", endpoint);
-      return app;
-    }
-
     function setBusy(on){
       runBtn.disabled = on;
       statusEl.textContent = on ? "⏳ Đang xử lý..." : "";
     }
+    function enableRunIfReady(){
+      runBtn.disabled = !(faceInput.files?.[0] && gameInput.files?.[0]);
+    }
 
-    // chạy API
+    faceInput.addEventListener("change", ()=>{ showPreview(faceInput, facePrev); enableRunIfReady(); });
+    gameInput.addEventListener("change", ()=>{ showPreview(gameInput, gamePrev); enableRunIfReady(); });
+
+    async function ensureClient(){
+      if (app) return app;
+      app = await Client.connect(SPACE, NEED_TOKEN ? { hf_token: HF_TOKEN } : undefined);
+      return app;
+    }
+
+    // ====== RUN ======
     runBtn.addEventListener("click", async ()=>{
       const face = faceInput.files?.[0];
       const game = gameInput.files?.[0];
       if (!face || !game){
-        alert("Vui lòng chọn đủ 2 ảnh (mặt thật + ảnh ingame).");
-        return;
+        alert("Vui lòng chọn đủ 2 ảnh (mặt thật + ingame)."); return;
       }
       try{
         await ensureClient();
         setBusy(true);
 
-        // gọi predict – truyền đúng thứ tự 2 ảnh (theo docs JS client) :contentReference[oaicite:3]{index=3}
-        const res = await app.predict(endpoint, [ handle_file(face), handle_file(game) ]); 
-        // đáp án có thể là Blob hoặc object có url
+        // gọi endpoint /predict_2img với 2 ảnh
+        const res = await app.predict(ENDPOINT, [ handle_file(face), handle_file(game) ]);
+
         let out = res?.data?.[0];
         let url = null;
 
-        if (out instanceof Blob) {
-          url = URL.createObjectURL(out);
-        } else if (out && typeof out === "object" && "url" in out) {
-          url = out.url;
-        } else if (typeof out === "string") {
-          url = out; // base64 hoặc URL
-        }
+        if (out instanceof Blob) url = URL.createObjectURL(out);
+        else if (out && typeof out === "object" && "url" in out) url = out.url;
+        else if (typeof out === "string") url = out; // base64/url
 
         if (!url) throw new Error("Không nhận được ảnh kết quả.");
+
         outImg.src = url;
-        dlLink.href = url;
-        dlLink.download = "ff_swapface_result.png";
+        dlLink.href = url; dlLink.download = "ff_swapface_result.png";
+        newtab.href = url;
         statusEl.textContent = "✅ Xong!";
       }catch(err){
         console.error(err);
         statusEl.textContent = "❌ Lỗi: " + (err?.message || err);
-        alert("Gọi API thất bại. Có thể endpoint Space không nhận 2 ảnh. Hãy đảm bảo Space có endpoint 2 ảnh hoặc đặt tên '/predict_2img'.");
+        alert("Gọi API thất bại. Kiểm tra lại Space đã có endpoint /predict_2img và đang chạy.");
       }finally{
         setBusy(false);
       }
@@ -143,49 +122,57 @@
 
     resetBtn.addEventListener("click", ()=>{
       faceInput.value = ""; gameInput.value = "";
-      facePrev.src = ""; gamePrev.src = ""; outImg.src = ""; dlLink.removeAttribute("href");
-      statusEl.textContent = "";
+      facePrev.src = ""; gamePrev.src = ""; outImg.src = "";
+      dlLink.removeAttribute("href"); newtab.removeAttribute("href");
+      statusEl.textContent = ""; runBtn.disabled = true;
     });
+
+    // disable run ban đầu
+    enableRunIfReady();
   </script>
 </head>
+
 <body>
   <div class="wrap">
     <h1>⚡ FF Swapface – upload 2 ảnh</h1>
+
     <div class="card">
       <div class="grid">
-        <div class="field">
+        <div class="col">
           <label>Ảnh mặt thật</label>
           <input id="face" type="file" accept="image/*" />
           <div class="box"><img id="prev-face" alt=""></div>
+          <div class="muted">Ảnh rõ mặt, chính diện là tốt nhất.</div>
         </div>
-        <div class="field">
+
+        <div class="col">
           <label>Ảnh ingame</label>
           <input id="game" type="file" accept="image/*" />
           <div class="box"><img id="prev-game" alt=""></div>
+          <div class="muted">Ảnh nhân vật ingame để ghép mặt.</div>
         </div>
       </div>
 
-      <div class="actions" style="margin-top:14px">
-        <button id="run">▶ Chạy</button>
+      <div class="actions">
+        <button id="run" disabled>▶ Chạy</button>
         <button id="reset" type="button">↺ Reset</button>
         <span id="status" class="status"></span>
       </div>
 
-      <div class="preview">
-        <div>
-          <div class="muted">Kết quả</div>
-          <div class="box"><img id="out-img" alt=""></div>
-          <div class="footer">
-            <a id="dl" class="btn" href="#" download>⬇ Tải ảnh</a>
-            <span class="muted">Kết quả sẽ xuất hiện sau khi xử lý.</span>
-          </div>
+      <div class="result">
+        <div class="muted">Kết quả</div>
+        <div class="box"><img id="out-img" alt=""></div>
+        <div class="footer">
+          <a id="dl"   class="btn" href="#" download>⬇ Tải ảnh</a>
+          <a id="open" class="btn" href="#" target="_blank" rel="noopener">↗ Mở tab mới</a>
+          <span class="muted">Nếu dùng iPhone, có thể chọn “Mở tab mới” rồi **Save Image**.</span>
         </div>
       </div>
     </div>
 
     <p class="muted" style="margin-top:12px">
-      * Trang này gọi API Space của bạn qua <code>@gradio/client</code>. Bạn có thể xem docs chính thức:
-      <a href="https://www.gradio.app/guides/getting-started-with-the-js-client" target="_blank" rel="noreferrer">JS Client</a>.
+      * Trang này gọi API Space <code>freefirehay/ff_faceswap</code> qua <code>@gradio/client</code>, endpoint <code>/predict_2img</code>.
+      Nếu Space private, thêm <code>?token=hf_xxx</code> vào URL của trang này.
     </p>
   </div>
 </body>
