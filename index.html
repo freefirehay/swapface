@@ -8,7 +8,8 @@
   <style>
     :root{
       --bg:#0b1220; --panel:#0f1a31; --muted:#9aa4b2; --accent:#6d6afc;
-      --text:#e9eef7; --border:#22304a; --radius:14px;
+      --text:#e9eef7; --border:#22304a; --radius:14px; --dash:#39507d;
+      --active:#7a7afc;
     }
     *{box-sizing:border-box}
     html,body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif}
@@ -16,9 +17,19 @@
     h1{font-size:24px;margin:0 0 12px}
     .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:16px}
     .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-    .field{display:flex;flex-direction:column;gap:8px}
+    .col{display:flex;flex-direction:column;gap:10px}
     label{font-weight:700}
-    input[type=file]{background:#0c1528;border:1px dashed #39507d;border-radius:12px;padding:14px;color:var(--muted)}
+    input[type=file]{background:#0c1528;border:1px dashed var(--dash);border-radius:12px;padding:12px;color:var(--muted)}
+    .dz{
+      position:relative; border:2px dashed var(--dash); border-radius:12px;
+      min-height:220px; display:flex; align-items:center; justify-content:center;
+      background:#0c1528; cursor:pointer; transition:.15s border-color;
+      outline:0;
+    }
+    .dz:focus-visible{box-shadow:0 0 0 3px rgba(109,106,252,.35)}
+    .dz.active, .dz.dragover{ border-color: var(--active); }
+    .dz .hint{ position:absolute; inset:auto 8px 8px 8px; text-align:center; color:var(--muted); font-size:13px }
+    .dz img{ max-width:100%; max-height:100%; object-fit:contain; display:block }
     .actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
     button{
       background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 16px;
@@ -26,14 +37,18 @@
     }
     button[disabled]{opacity:.5;cursor:not-allowed}
     .status{font-weight:700}
-    .col{display:flex;flex-direction:column;gap:10px}
-    .box{background:#0c1528;border:1px solid var(--border);border-radius:12px;min-height:220px;display:flex;align-items:center;justify-content:center;overflow:hidden}
+    .result{margin-top:16px}
+    .box{background:#0c1528;border:1px solid var(--border);border-radius:12px;min-height:260px;display:flex;align-items:center;justify-content:center;overflow:hidden}
     .box img{max-width:100%;max-height:100%;object-fit:contain;display:block}
     .muted{color:var(--muted);font-size:13px}
-    .result{margin-top:16px}
     .footer{margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     a.btn{background:#24324f;border:1px solid #2e4169;border-radius:10px;padding:9px 12px;color:#fff;text-decoration:none}
-    @media (max-width:720px){ .grid{grid-template-columns:1fr} .box{min-height:180px} }
+    .tips{margin:8px 0 0;color:var(--muted);font-size:13px}
+    @media (max-width:720px){
+      .grid{grid-template-columns:1fr}
+      .dz{min-height:180px}
+      .box{min-height:220px}
+    }
   </style>
 
   <!-- Gọi API Space bằng Gradio JS Client -->
@@ -41,72 +56,168 @@
     import { Client, handle_file } from "https://cdn.jsdelivr.net/npm/@gradio/client/dist/index.min.js";
 
     // ====== CẤU HÌNH ======
-    const SPACE = "freefirehay/ff_faceswap";   // tên Space
-    const ENDPOINT = "/predict_2img";          // endpoint bạn vừa thêm trong app.py
-    // Nếu Space private: thêm ?token=hf_xxx vào URL hoặc điền ở dưới
+    const SPACE    = "freefirehay/ff_faceswap"; // Space
+    const ENDPOINT = "/predict_2img";           // endpoint trong app.py
+    // Nếu Space private, truyền token qua query ?token=hf_xxx
     const urlToken = new URLSearchParams(location.search).get("token") || "";
     const NEED_TOKEN = !!urlToken;
-    const HF_TOKEN = urlToken; // hoặc gán chuỗi token cố định
+    const HF_TOKEN   = urlToken;
 
     // ====== DOM ======
-    const faceInput = document.getElementById("face");
-    const gameInput = document.getElementById("game");
-    const facePrev  = document.getElementById("prev-face");
-    const gamePrev  = document.getElementById("prev-game");
-    const runBtn    = document.getElementById("run");
-    const resetBtn  = document.getElementById("reset");
-    const statusEl  = document.getElementById("status");
-    const outImg    = document.getElementById("out-img");
-    const dlLink    = document.getElementById("dl");
-    const newtab    = document.getElementById("open");
+    const dzFace   = document.getElementById("dz-face");
+    const dzGame   = document.getElementById("dz-game");
+    const faceInput= document.getElementById("face");
+    const gameInput= document.getElementById("game");
+    const facePrev = document.getElementById("prev-face");
+    const gamePrev = document.getElementById("prev-game");
+    const runBtn   = document.getElementById("run");
+    const resetBtn = document.getElementById("reset");
+    const statusEl = document.getElementById("status");
+    const outImg   = document.getElementById("out-img");
+    const dlLink   = document.getElementById("dl");
+    const newtab   = document.getElementById("open");
 
     let app = null;
+    let activeTarget = "face"; // ô đang nhận paste/drop: "face" | "game"
 
-    // ====== helpers ======
-    function showPreview(input, imgEl){
-      if (!input.files?.[0]) { imgEl.src=""; return; }
-      imgEl.src = URL.createObjectURL(input.files[0]);
-    }
+    // ====== helper ======
     function setBusy(on){
       runBtn.disabled = on;
       statusEl.textContent = on ? "⏳ Đang xử lý..." : "";
     }
+    function showPreview(file, imgEl){
+      if (!file){ imgEl.src = ""; return; }
+      imgEl.src = URL.createObjectURL(file);
+    }
+    function setFileFor(target, file){
+      if (!file) return;
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      if (target === "face"){
+        faceInput.files = dt.files;
+        showPreview(file, facePrev);
+        markActive("game"); // chuyển focus sang ô còn lại
+      }else{
+        gameInput.files = dt.files;
+        showPreview(file, gamePrev);
+        markActive("face");
+      }
+      enableRunIfReady();
+    }
     function enableRunIfReady(){
-      runBtn.disabled = !(faceInput.files?.[0] && gameInput.files?.[0]);
+      runBtn.disabled = !(faceInput.files?.length && gameInput.files?.length);
+    }
+    function fileFromBlob(blob, name="image.png"){
+      try { return new File([blob], name, {type: blob.type || "image/png"}); }
+      catch { const f = blob; f.name = name; return f; } // fallback cũ
     }
 
-    faceInput.addEventListener("change", ()=>{ showPreview(faceInput, facePrev); enableRunIfReady(); });
-    gameInput.addEventListener("change", ()=>{ showPreview(gameInput, gamePrev); enableRunIfReady(); });
+    // ====== Chọn ô đang hoạt động (để paste/drop vào đúng ô) ======
+    function markActive(target){
+      activeTarget = target;
+      dzFace.classList.toggle("active", target === "face");
+      dzGame.classList.toggle("active", target === "game");
+      (target === "face" ? dzFace : dzGame).focus({preventScroll:true});
+    }
+    dzFace.addEventListener("click", ()=>markActive("face"));
+    dzGame.addEventListener("click", ()=>markActive("game"));
 
+    // ====== Lắng nghe chọn file thường ======
+    faceInput.addEventListener("change", e=>{
+      const f = e.target.files?.[0]; showPreview(f, facePrev); enableRunIfReady();
+      markActive("game");
+    });
+    gameInput.addEventListener("change", e=>{
+      const f = e.target.files?.[0]; showPreview(f, gamePrev); enableRunIfReady();
+      markActive("face");
+    });
+
+    // ====== DÁN từ clipboard (Ctrl/⌘+V) ======
+    document.addEventListener("paste", async (e)=>{
+      const items = e.clipboardData?.items || [];
+      // Ưu tiên image/*
+      for (const it of items){
+        if (it.type && it.type.startsWith("image/")){
+          const blob = it.getAsFile();
+          if (blob){
+            setFileFor(activeTarget, fileFromBlob(blob, `paste_${Date.now()}.png`));
+            e.preventDefault();
+            return;
+          }
+        }
+      }
+      // Nếu người dùng dán dataURL hoặc URL ảnh
+      const text = e.clipboardData?.getData("text") || "";
+      if (text.startsWith("data:image/")){
+        try{
+          const res = await fetch(text);
+          const blob = await res.blob();
+          setFileFor(activeTarget, fileFromBlob(blob, `paste_${Date.now()}.png`));
+          e.preventDefault();
+        }catch(_){}
+      } else if (/^https?:\/\/.+\.(png|jpe?g|webp|bmp|gif)(\?.*)?$/i.test(text)){
+        try{
+          const res = await fetch(text, {mode:"cors"});
+          const blob = await res.blob();
+          setFileFor(activeTarget, fileFromBlob(blob, `url_${Date.now()}.png`));
+          e.preventDefault();
+        }catch(_){ /* CORS có thể chặn, bỏ qua */ }
+      }
+    });
+
+    // ====== KÉO-THẢ vào từng ô ======
+    function preventDefaults(e){ e.preventDefault(); e.stopPropagation(); }
+    function wireDropzone(dz, target){
+      ["dragenter","dragover"].forEach(ev=>dz.addEventListener(ev,(e)=>{preventDefaults(e); dz.classList.add("dragover"); markActive(target);}));
+      ["dragleave","drop"].forEach(ev=>dz.addEventListener(ev,(e)=>{preventDefaults(e); dz.classList.remove("dragover");}));
+      dz.addEventListener("drop", async (e)=>{
+        const dt = e.dataTransfer;
+        if (dt?.files?.length){
+          const f = [...dt.files].find(f=>/^image\//i.test(f.type));
+          if (f) setFileFor(target, f);
+          return;
+        }
+        // thả URL ảnh
+        const url = dt?.getData("text/uri-list") || dt?.getData("text/plain");
+        if (url && /^https?:\/\/.+\.(png|jpe?g|webp|bmp|gif)(\?.*)?$/i.test(url)){
+          try{
+            const res = await fetch(url, {mode:"cors"});
+            const blob = await res.blob();
+            setFileFor(target, fileFromBlob(blob, `drop_${Date.now()}.png`));
+          }catch(_){}
+        }
+      });
+    }
+    wireDropzone(dzFace, "face");
+    wireDropzone(dzGame, "game");
+
+    // ====== Kết nối Space ======
+    let appInst = null;
     async function ensureClient(){
-      if (app) return app;
-      app = await Client.connect(SPACE, NEED_TOKEN ? { hf_token: HF_TOKEN } : undefined);
-      return app;
+      if (appInst) return appInst;
+      appInst = await Client.connect(SPACE, NEED_TOKEN ? { hf_token: HF_TOKEN } : undefined);
+      return appInst;
     }
 
     // ====== RUN ======
-    runBtn.addEventListener("click", async ()=>{
-      const face = faceInput.files?.[0];
-      const game = gameInput.files?.[0];
-      if (!face || !game){
-        alert("Vui lòng chọn đủ 2 ảnh (mặt thật + ingame)."); return;
-      }
+    const runBtnEl = document.getElementById("run");
+    runBtnEl.addEventListener("click", async ()=>{
+      const f1 = faceInput.files?.[0];
+      const f2 = gameInput.files?.[0];
+      if (!f1 || !f2){ alert("Vui lòng cung cấp đủ 2 ảnh (mặt thật + ingame)."); return; }
+
       try{
         await ensureClient();
         setBusy(true);
 
-        // gọi endpoint /predict_2img với 2 ảnh
-        const res = await app.predict(ENDPOINT, [ handle_file(face), handle_file(game) ]);
-
+        const res = await appInst.predict(ENDPOINT, [ handle_file(f1), handle_file(f2) ]);
         let out = res?.data?.[0];
         let url = null;
-
         if (out instanceof Blob) url = URL.createObjectURL(out);
         else if (out && typeof out === "object" && "url" in out) url = out.url;
-        else if (typeof out === "string") url = out; // base64/url
+        else if (typeof out === "string") url = out;
 
         if (!url) throw new Error("Không nhận được ảnh kết quả.");
-
         outImg.src = url;
         dlLink.href = url; dlLink.download = "ff_swapface_result.png";
         newtab.href = url;
@@ -114,7 +225,7 @@
       }catch(err){
         console.error(err);
         statusEl.textContent = "❌ Lỗi: " + (err?.message || err);
-        alert("Gọi API thất bại. Kiểm tra lại Space đã có endpoint /predict_2img và đang chạy.");
+        alert("Gọi API thất bại. Hãy kiểm tra Space đang chạy và /predict_2img tồn tại.");
       }finally{
         setBusy(false);
       }
@@ -124,34 +235,47 @@
       faceInput.value = ""; gameInput.value = "";
       facePrev.src = ""; gamePrev.src = ""; outImg.src = "";
       dlLink.removeAttribute("href"); newtab.removeAttribute("href");
-      statusEl.textContent = ""; runBtn.disabled = true;
+      statusEl.textContent = "";
+      markActive("face");
+      enableRunIfReady();
     });
 
-    // disable run ban đầu
+    // Khởi tạo
+    markActive("face");
     enableRunIfReady();
   </script>
 </head>
 
 <body>
   <div class="wrap">
-    <h1>⚡ FF Swapface – upload 2 ảnh</h1>
+    <h1>⚡ FF Swapface – kéo, thả & dán ảnh</h1>
 
     <div class="card">
       <div class="grid">
+        <!-- Cột 1 -->
         <div class="col">
           <label>Ảnh mặt thật</label>
           <input id="face" type="file" accept="image/*" />
-          <div class="box"><img id="prev-face" alt=""></div>
-          <div class="muted">Ảnh rõ mặt, chính diện là tốt nhất.</div>
+          <div id="dz-face" class="dz" tabindex="0" title="Click để chọn – hoặc dán (Ctrl/⌘+V) – hoặc kéo-thả ảnh vào đây">
+            <img id="prev-face" alt="">
+            <div class="hint">Dán (Ctrl/⌘+V) hoặc kéo-thả ảnh vào đây</div>
+          </div>
+          <div class="muted">Tip: bấm vào ô để đặt làm nơi nhận “dán ảnh”.</div>
         </div>
 
+        <!-- Cột 2 -->
         <div class="col">
           <label>Ảnh ingame</label>
           <input id="game" type="file" accept="image/*" />
-          <div class="box"><img id="prev-game" alt=""></div>
-          <div class="muted">Ảnh nhân vật ingame để ghép mặt.</div>
+          <div id="dz-game" class="dz" tabindex="0" title="Click để chọn – hoặc dán (Ctrl/⌘+V) – hoặc kéo-thả ảnh vào đây">
+            <img id="prev-game" alt="">
+            <div class="hint">Dán (Ctrl/⌘+V) hoặc kéo-thả ảnh vào đây</div>
+          </div>
+          <div class="muted">Có thể dán ảnh đã copy từ web/app nếu trang cho phép.</div>
         </div>
       </div>
+
+      <div class="tips">Bạn có thể: <strong>Chọn file</strong>, <strong>Kéo-thả</strong>, hoặc <strong>Dán (Ctrl/⌘+V)</strong> ảnh vào từng ô.</div>
 
       <div class="actions">
         <button id="run" disabled>▶ Chạy</button>
@@ -165,7 +289,7 @@
         <div class="footer">
           <a id="dl"   class="btn" href="#" download>⬇ Tải ảnh</a>
           <a id="open" class="btn" href="#" target="_blank" rel="noopener">↗ Mở tab mới</a>
-          <span class="muted">Nếu dùng iPhone, có thể chọn “Mở tab mới” rồi **Save Image**.</span>
+          <span class="muted">iPhone/iPad: nếu nút tải không hoạt động, hãy bấm “Mở tab mới” rồi giữ ảnh để Lưu.</span>
         </div>
       </div>
     </div>
